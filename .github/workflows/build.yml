@@ -174,6 +174,37 @@ jobs:
           ./scripts/lint-packages.sh $package_recipes
         fi
 
+    - name: Patch (rebrand com.termux -> vn.vhn.vsc)
+      run: |
+        # Rebrand recipes + build scripts to the vheditor prefix (/data/data/vn.vhn.vsc).
+        ./patch-repo.sh
+
+        # The CGCT cross-toolchain and the temporary glibc are PREBUILT blobs (downloaded from
+        # sync.termux-pacman.dev) with /data/data/com.termux baked in - patch-repo.sh cannot rewrite
+        # a compiled toolchain. These three references must therefore stay com.termux so the scripts
+        # keep matching the blobs:
+        #   * CGCT_DEFAULT_PREFIX - the toolchain's compiled-in default; drives the CGCT_APP_PREFIX
+        #     export in termux_step_setup_variables.sh (only exported when TERMUX_PREFIX != default).
+        #   * CGCT_DIR            - where setup-cgct.sh extracts the prebuilt toolchain tarball.
+        #   * PREFIX_TMP_GLIBC    - path layout inside the downloaded temporary-glibc deb.
+        # Output binaries are still redirected to /data/data/vn.vhn.vsc/files/usr/glibc automatically
+        # via CGCT_APP_PREFIX (=TERMUX_PREFIX), which the patched GCC/binutils honour at link time.
+        sed -i 's#CGCT_DEFAULT_PREFIX="/data/data/vn.vhn.vsc/files/usr/glibc"#CGCT_DEFAULT_PREFIX="/data/data/com.termux/files/usr/glibc"#' scripts/properties.sh
+        sed -i 's#CGCT_DIR="/data/data/vn.vhn.vsc/cgct"#CGCT_DIR="/data/data/com.termux/cgct"#' scripts/properties.sh
+        sed -i 's#PREFIX_TMP_GLIBC="data/data/vn.vhn.vsc/files/usr/glibc"#PREFIX_TMP_GLIBC="data/data/com.termux/files/usr/glibc"#' scripts/build/termux_step_setup_cgct_environment.sh
+
+        # Fail loudly if the shielded references did not survive (e.g. upstream renamed a variable).
+        for f in \
+          'scripts/properties.sh:CGCT_DEFAULT_PREFIX="/data/data/com.termux/files/usr/glibc"' \
+          'scripts/properties.sh:CGCT_DIR="/data/data/com.termux/cgct"' \
+          'scripts/build/termux_step_setup_cgct_environment.sh:PREFIX_TMP_GLIBC="data/data/com.termux/files/usr/glibc"'; do
+          file="${f%%:*}"; needle="${f#*:}"
+          if ! grep -qF "$needle" "$file"; then
+            echo "::error ::CGCT shield failed: expected '$needle' in $file after patch-repo.sh"
+            exit 1
+          fi
+        done
+
     - name: Build packages
       run: |
         declare -a packages
@@ -241,71 +272,29 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - name: Clone repository
-      uses: actions/checkout@v7
     - name: Get *.deb files
       uses: actions/download-artifact@v8.0.1
       with:
+        merge-multiple: true
         path: ./
-    - name: Get files from termux-packages repository
-      run: ./get-build-package.sh
-    - name: Upload to packages.termux.dev
-      env:
-        REPOSITORY_URL: https://packages.termux.dev/aptly-api
+    - name: Upload to vsc.vhn.vn
       run: |
-        GITHUB_SHA=${{ github.sha }}
-        APTLY_API_AUTH=${{ secrets.APTLY_API_AUTH }}
-        GPG_PASSPHRASE=${{ secrets.GPG_PASSPHRASE }}
+        # Bundle every arch's deb tarball and hand them to the vheditor package server, which
+        # publishes the apt repo. glibc debs carry a `-glibc` name suffix so they never collide
+        # with the bionic/main debs even in a shared component; the `library=glibc` field tells
+        # the server which distribution/component to publish them under.
+        archive="glibc-packages-${{ github.sha }}.zip"
+        deb_archives=$(find . -name "debs-*-${{ github.sha }}.tar")
 
-        source scripts/aptly_api.sh
-        source scripts/utils/termux/package/termux_package.sh
+        if [ -z "$deb_archives" ]; then
+          echo "No archives to upload found"
+          exit 0
+        fi
 
-        get_list_pkgs() {
-          for i in $(cat debs/built_${REPOSITORY_NAME}_packages.txt | sed -E 's/(..*)/\1\n\1-static/g'); do
-            local pkgname="${i}"
-            if ! termux_package__is_package_name_have_glibc_prefix "$pkgname"; then
-              pkgname=$(termux_package__add_prefix_glibc_to_package_name "$pkgname")
-            fi
-            find debs/ -name "${pkgname}_*.deb"
-          done
-        }
-
-        for archive in debs-*/debs-{aarch64,arm,i686,x86_64}-${{ github.sha }}.tar; do
-          tar xf "$archive"
-        done
-
-        for repo in $(jq --raw-output 'del(.pkg_format) | keys | .[]' repo.json); do
-          export REPOSITORY_NAME=$(jq --raw-output '.["'$repo'"].name' repo.json)
-          export REPOSITORY_DISTRIBUTION=$(jq --raw-output '.["'$repo'"].distribution' repo.json)
-
-          # Upload file to temporary directory.
-          uploaded_files=false
-          shopt -s nullglob
-
-          if [ -f debs/built_${REPOSITORY_NAME}_packages.txt ]; then
-            for filename in $(get_list_pkgs); do
-              if ! aptly_upload_file "$filename"; then
-                continue
-              fi
-
-              uploaded_files=true
-            done
-            shopt -u nullglob
-
-            # Publishing repository changes.
-            if [ "$uploaded_files" = "true" ]; then
-              #if ! aptly_add_to_repo; then
-              #  exit 1
-              #fi
-              aptly_add_to_repo || true
-
-              # Usually temporary directory is deleted automatically, but in certain cases it is left.
-              aptly_delete_dir
-
-              # Final part to make changes appear in web root.
-              if ! aptly_publish_repo; then
-                exit 1
-              fi
-            fi
-          fi
-        done
+        zip "$archive" ${deb_archives}
+        curl --fail --retry 3 \
+          -X POST \
+          -H "Authorization: Bearer ${{ secrets.VSC_UPLOAD_TOKEN }}" \
+          -F "file=@${archive}" \
+          -F "library=glibc" \
+          "${{ secrets.VSC_UPLOAD_URL }}"
