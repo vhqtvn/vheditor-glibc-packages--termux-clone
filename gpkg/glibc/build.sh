@@ -234,3 +234,5 @@ termux_step_make_install_multilib() {
 
 	termux_glibc_make_syscall_without_fsc
 }
+
+# vheditor: seed foundational glibc under vn.vhn.vsc prefix
