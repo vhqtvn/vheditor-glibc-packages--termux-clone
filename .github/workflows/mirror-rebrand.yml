@@ -62,9 +62,11 @@ jobs:
     needs: rebrand
     if: github.event_name != 'pull_request'
     permissions:
-      contents: read
+      contents: write        # push a per-upload marker commit for a unique release sha
     runs-on: ubuntu-latest
     steps:
+    - name: Clone repository
+      uses: actions/checkout@v7
     - name: Get rebranded *.deb files
       uses: actions/download-artifact@v8.0.1
       with:
@@ -72,7 +74,6 @@ jobs:
         path: ./
     - name: Upload to vsc.vhn.vn
       run: |
-        archive="glibc-packages-${{ github.sha }}.zip"
         deb_archives=$(find . -name "debs-*-${{ github.sha }}.tar")
         total=$(for t in $deb_archives; do tar tf "$t"; done 2>/dev/null | grep -c '\.deb$' || true)
         echo "new packages this run: ${total:-0}"
@@ -80,6 +81,19 @@ jobs:
           echo "nothing new to publish; done"
           exit 0
         fi
+        # GitHub caps 1000 assets/release. The server files each upload's debs under a
+        # release repos-<sha> keyed by the zip's <sha>. Scheduled runs otherwise reuse the
+        # same HEAD sha and pile every batch into one release until it hits the cap. Create a
+        # fresh marker commit per upload so each batch (~160 assets) gets its own release.
+        # (GITHUB_TOKEN pushes do not re-trigger workflows; [skip ci] is belt-and-suspenders.)
+        git config user.name "vh-mirror-bot"
+        git config user.email "mirror@vhn.vn"
+        git fetch --depth=1 origin main
+        git checkout -B main origin/main
+        git commit --allow-empty -m "mirror: release marker for glibc batch [skip ci]"
+        git push origin main
+        RSHA="$(git rev-parse HEAD)"
+        archive="glibc-packages-${RSHA}.zip"
         zip "$archive" $deb_archives
         ls -lh "$archive"
         curl --fail --retry 3 \
