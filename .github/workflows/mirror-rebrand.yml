@@ -62,7 +62,7 @@ jobs:
     needs: rebrand
     if: github.event_name != 'pull_request'
     permissions:
-      contents: write        # push a per-upload marker commit for a unique release sha
+      contents: write        # REQUIRES repo Settings > Actions > Workflow permissions = Read and write
     runs-on: ubuntu-latest
     steps:
     - name: Clone repository
@@ -81,11 +81,11 @@ jobs:
           echo "nothing new to publish; done"
           exit 0
         fi
-        # GitHub caps 1000 assets/release. The server files each upload's debs under a
-        # release repos-<sha> keyed by the zip's <sha>. Scheduled runs otherwise reuse the
-        # same HEAD sha and pile every batch into one release until it hits the cap. Create a
-        # fresh marker commit per upload so each batch (~160 assets) gets its own release.
-        # (GITHUB_TOKEN pushes do not re-trigger workflows; [skip ci] is belt-and-suspenders.)
+        # GitHub caps 1000 assets/release, and the server files each upload's debs under a
+        # release repos-<sha> keyed by the zip's <sha> (a real commit). Scheduled runs reuse
+        # the same HEAD sha, piling every batch into one release until it hits the cap. Make a
+        # fresh empty marker commit per upload so each batch (~160 assets) gets its own release.
+        # GITHUB_TOKEN pushes don't re-trigger workflows; the empty commit touches no trigger paths.
         git config user.name "vh-mirror-bot"
         git config user.email "mirror@vhn.vn"
         git fetch --depth=1 origin main
