@@ -1,0 +1,90 @@
+name: Mirror rebrand
+
+# Fully-automated population of the vheditor glibc repo: mirror termux's glibc apt
+# repo and rebrand each .deb (equal-length com.termux -> vn.vhn.vsc byte swap; see
+# scripts-vh/rebrand-deb.sh), then publish via the vsc.vhn.vn upload path. Delta-aware
+# (only new/changed versions) and bounded per run so the initial backlog drains over a
+# few scheduled runs and steady-state stays cheap. No source builds, no toolchain.
+
+on:
+  schedule:
+    - cron: '17 * * * *'      # hourly: drain backlog, then keep in sync with upstream
+  push:
+    branches: [main]
+    paths:
+      - '.mirror-trigger'      # touch this file to trigger a drain run without a token
+      - 'scripts-vh/mirror-rebrand.py'
+      - 'scripts-vh/rebrand-deb.sh'
+      - '.github/workflows/mirror-rebrand.yml'
+  workflow_dispatch:
+    inputs:
+      max:
+        description: 'Max packages to rebrand per architecture this run'
+        required: false
+        default: '40'
+
+permissions: {}
+
+concurrency:
+  group: mirror-rebrand
+  cancel-in-progress: false
+
+env:
+  MAX_PER_ARCH: '40'
+
+jobs:
+  rebrand:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        target_arch: [aarch64, arm, i686, x86_64]
+      fail-fast: false
+    steps:
+    - name: Clone repository
+      uses: actions/checkout@v7
+    - name: Install tools
+      run: sudo apt-get update && sudo apt-get install -y dpkg binutils xz-utils zstd
+    - name: Mirror + rebrand ${{ matrix.target_arch }}
+      run: |
+        MAX="${{ github.event.inputs.max || env.MAX_PER_ARCH }}"
+        mkdir -p out artifacts
+        python3 scripts-vh/mirror-rebrand.py "${{ matrix.target_arch }}" "$PWD/out" "$MAX"
+        tar cf "artifacts/debs-${{ matrix.target_arch }}-${{ github.sha }}.tar" -C out debs
+    - name: Store rebranded *.deb files
+      uses: actions/upload-artifact@v7.0.1
+      with:
+        name: debs-${{ matrix.target_arch }}-${{ github.sha }}
+        path: ./artifacts
+
+  upload:
+    needs: rebrand
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get rebranded *.deb files
+      uses: actions/download-artifact@v8.0.1
+      with:
+        merge-multiple: true
+        path: ./
+    - name: Upload to vsc.vhn.vn
+      run: |
+        archive="glibc-packages-${{ github.sha }}.zip"
+        deb_archives=$(find . -name "debs-*-${{ github.sha }}.tar")
+        total=$(for t in $deb_archives; do tar tf "$t"; done 2>/dev/null | grep -c '\.deb$' || true)
+        echo "new packages this run: ${total:-0}"
+        if [ "${total:-0}" = 0 ]; then
+          echo "nothing new to publish; done"
+          exit 0
+        fi
+        zip "$archive" $deb_archives
+        ls -lh "$archive"
+        curl --fail --retry 3 \
+          -X POST \
+          -H "Authorization: Bearer ${{ secrets.VSC_UPLOAD_TOKEN }}" \
+          -F "file=@${archive}" \
+          -F "library=glibc" \
+          "${{ secrets.VSC_UPLOAD_URL }}"
