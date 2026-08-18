@@ -13,15 +13,33 @@ CTRL="$(ls control.tar.* )"; DATA="$(ls data.tar.*)"
 dec() { case "$1" in *.xz) xz -dc "$1";; *.gz) gzip -dc "$1";; *.zst) zstd -dc "$1";; *) cat "$1";; esac; }
 enc() { case "$1" in *.xz) xz -9;; *.gz) gzip -9;; *.zst) zstd -19 -q;; *) cat;; esac; }
 byterepl() { OLD="$OLD" NEW="$NEW" python3 - "$1" <<'PY'
-import os,sys
+import os,sys,io,gzip,lzma,bz2
 root=sys.argv[1]; old=os.environ['OLD'].encode(); new=os.environ['NEW'].encode()
+assert len(old)==len(new)  # equal length keeps every offset (binaries) safe
 for dp,_,fs in os.walk(root):
   for fn in fs:
     p=os.path.join(dp,fn)
     if os.path.islink(p): continue
     d=open(p,'rb').read()
+    # 1) raw byte-swap (binaries, text, configs): equal length -> layout preserved
     if old in d:
-      d2=d.replace(old,new); assert len(d2)==len(d); open(p,'wb').write(d2)
+      d2=d.replace(old,new); assert len(d2)==len(d); open(p,'wb').write(d2); continue
+    # 2) reach into compressed members (e.g. gzipped man/info pages) the raw swap can't see
+    try:
+      if fn.endswith('.gz'):
+        u=gzip.decompress(d)
+        if old in u:
+          buf=io.BytesIO()
+          with gzip.GzipFile(fileobj=buf, mode='wb', mtime=0) as g: g.write(u.replace(old,new))
+          open(p,'wb').write(buf.getvalue())
+      elif fn.endswith('.xz'):
+        u=lzma.decompress(d)
+        if old in u: open(p,'wb').write(lzma.compress(u.replace(old,new)))
+      elif fn.endswith('.bz2'):
+        u=bz2.decompress(d)
+        if old in u: open(p,'wb').write(bz2.compress(u.replace(old,new)))
+    except Exception:
+      pass  # not really compressed / unreadable -> leave as-is
 PY
 }
 
