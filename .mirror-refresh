@@ -1,0 +1,11 @@
+binutils-glibc
+gcc-glibc
+glibc-runner
+krb5-glibc
+libxaw-glibc
+ncurses-utils-glibc
+perl-glibc
+postgresql-glibc
+rhash-glibc
+xkeyboard-config-glibc
+xorg-xclock-glibc
