@@ -13,6 +13,7 @@ on:
     branches: [main]
     paths:
       - '.mirror-trigger'      # touch this file to trigger a drain run without a token
+      - '.mirror-refresh'      # push a package list here to force re-rebrand (no token needed)
       - 'scripts-vh/mirror-rebrand.py'
       - 'scripts-vh/rebrand-deb.sh'
       - '.github/workflows/mirror-rebrand.yml'
@@ -52,10 +53,16 @@ jobs:
     - name: Install tools
       run: sudo apt-get update && sudo apt-get install -y dpkg binutils xz-utils zstd
     - name: Mirror + rebrand ${{ matrix.target_arch }}
-      env:
-        REFRESH: ${{ github.event.inputs.refresh }}
       run: |
         MAX="${{ github.event.inputs.max || env.MAX_PER_ARCH }}"
+        # Refresh list: dispatch input wins; else (only on a push) the .mirror-refresh file.
+        # Scheduled runs ignore the file so a stale list can't cause endless re-refreshing.
+        REFRESH="${{ github.event.inputs.refresh }}"
+        if [ -z "$REFRESH" ] && [ "${{ github.event_name }}" = "push" ]; then
+          REFRESH="$(tr '\n' ' ' < .mirror-refresh 2>/dev/null || true)"
+        fi
+        export REFRESH
+        echo "REFRESH='${REFRESH}'"
         mkdir -p out artifacts
         python3 scripts-vh/mirror-rebrand.py "${{ matrix.target_arch }}" "$PWD/out" "$MAX"
         tar cf "artifacts/debs-${{ matrix.target_arch }}-${{ github.sha }}.tar" -C out debs
