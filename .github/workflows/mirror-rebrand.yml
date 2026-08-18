@@ -37,6 +37,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-24.04
+    timeout-minutes: 30        # a wedged apt-get/network must not hold the concurrency lock for 6h
     strategy:
       matrix:
         target_arch: [aarch64, arm, i686, x86_64]
@@ -64,6 +65,7 @@ jobs:
     permissions:
       contents: write        # REQUIRES repo Settings > Actions > Workflow permissions = Read and write
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
     - name: Clone repository
       uses: actions/checkout@v7
