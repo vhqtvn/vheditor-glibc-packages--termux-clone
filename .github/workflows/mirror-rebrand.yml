@@ -78,9 +78,10 @@ jobs:
       run: |
         deb_archives=$(find . -name "debs-*-${{ github.sha }}.tar")
         total=$(for t in $deb_archives; do tar tf "$t"; done 2>/dev/null | grep -c '\.deb$' || true)
-        echo "new packages this run: ${total:-0}"
-        if [ "${total:-0}" = 0 ]; then
-          echo "nothing new to publish; done"
+        deleted=$(for t in $deb_archives; do tar -xOf "$t" debs/deleted_termux-glibc_packages.txt 2>/dev/null; done | grep -c . || true)
+        echo "new packages: ${total:-0}; deletions: ${deleted:-0}"
+        if [ "${total:-0}" = 0 ] && [ "${deleted:-0}" = 0 ]; then
+          echo "nothing to publish or delete; done"
           exit 0
         fi
         # GitHub caps 1000 assets/release, and the server files each upload's debs under a

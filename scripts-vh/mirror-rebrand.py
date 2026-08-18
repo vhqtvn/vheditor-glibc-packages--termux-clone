@@ -85,9 +85,25 @@ def main():
         finally:
             if os.path.exists(src):
                 os.remove(src)
-    with open(os.path.join(debs, f"built_termux-glibc_packages.txt"), "w") as f:
+    with open(os.path.join(debs, "built_termux-glibc_packages.txt"), "w") as f:
         f.write("\n".join(built) + ("\n" if built else ""))
-    print(f"[{ARCH}] rebranded {len(built)} packages; remaining backlog "
+
+    # Deletion sync: packages we've published for this arch that upstream no longer has.
+    # The server removes anything listed in deleted_<repo>_packages.txt. Guard hard against a
+    # failed/partial upstream fetch (which would make every package look "removed" and wipe the
+    # repo): require a non-empty upstream index and cap deletions per run to a small fraction.
+    removed = sorted(n for n in mine if n not in upstream)
+    limit = max(15, len(mine) // 20)
+    if upstream and 0 < len(removed) <= limit:
+        with open(os.path.join(debs, "deleted_termux-glibc_packages.txt"), "w") as f:
+            f.write("\n".join(removed) + "\n")
+        print(f"[{ARCH}] deletion sync: {len(removed)} gone upstream -> {removed[:10]}")
+    elif len(removed) > limit:
+        print(f"[{ARCH}] WARNING: {len(removed)} would-be deletions exceed safety limit {limit} "
+              f"(upstream={len(upstream)}, mine={len(mine)}) - skipping deletion this run",
+              file=sys.stderr)
+
+    print(f"[{ARCH}] rebranded {len(built)} packages, {len(removed)} to delete; remaining backlog "
           f"~{max(0, len(upstream) - len(mine) - len(built))}")
 
 if __name__ == "__main__":
