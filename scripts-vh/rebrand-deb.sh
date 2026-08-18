@@ -14,12 +14,22 @@ dec() { case "$1" in *.xz) xz -dc "$1";; *.gz) gzip -dc "$1";; *.zst) zstd -dc "
 enc() { case "$1" in *.xz) xz -9;; *.gz) gzip -9;; *.zst) zstd -19 -q;; *) cat;; esac; }
 byterepl() { OLD="$OLD" NEW="$NEW" python3 - "$1" <<'PY'
 import os,sys,io,gzip,lzma,bz2
-root=sys.argv[1]; old=os.environ['OLD'].encode(); new=os.environ['NEW'].encode()
+root=sys.argv[1]; olds=os.environ['OLD']; news=os.environ['NEW']
+old=olds.encode(); new=news.encode()
 assert len(old)==len(new)  # equal length keeps every offset (binaries) safe
-for dp,_,fs in os.walk(root):
-  for fn in fs:
+for dp,dirs,files in os.walk(root):
+  # 0) symlink targets (file- or dir-symlinks): re-point absolute com.termux targets,
+  #    which the content byte-swap cannot touch (readlink, not file bytes).
+  for name in files+dirs:
+    p=os.path.join(dp,name)
+    if os.path.islink(p):
+      t=os.readlink(p)
+      if olds in t:
+        os.remove(p); os.symlink(t.replace(olds,news), p)
+  # regular files
+  for fn in files:
     p=os.path.join(dp,fn)
-    if os.path.islink(p): continue
+    if os.path.islink(p): continue  # handled above
     d=open(p,'rb').read()
     # 1) raw byte-swap (binaries, text, configs): equal length -> layout preserved
     if old in d:
